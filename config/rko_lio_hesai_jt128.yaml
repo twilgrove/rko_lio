@@ -1,0 +1,92 @@
+/**:
+  ros__parameters:
+    # --- 输入话题 ---------------------------------------------
+    lidar_topic: /dog/lidar_points              # 点云话题
+    imu_topic: /dog/lidar_imu                   # IMU 话题
+
+    # --- 坐标系 -----------------------------------------------
+    base_frame: hesai_lidar                     # 机体坐标系，里程计估计的就是它的位姿
+    lidar_frame: hesai_lidar                    # 点云坐标系；空 = 取消息 header
+    imu_frame: hesai_lidar                      # IMU 坐标系；空 = 取消息 header
+    odom_frame: odom                            # 里程计的世界坐标系
+
+    # --- 外参 [qx, qy, qz, qw, x, y, z]（TF 里有就不用填） ----
+    # 雷达到机体
+    extrinsic_lidar2base_quat_xyzw_xyz: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+    # IMU 到机体
+    extrinsic_imu2base_quat_xyzw_xyz: [0.0, 0.0, 0.0, 1.0, 0.00862, -0.00914, -0.03916]
+
+    # --- IMU 单位 ---------------------------------------------
+    imu_gyro_scale: 0.017453292519943295        # 陀螺乘此系数得 rad/s；输入是 deg/s 用默认，rad/s 填 1.0
+    imu_accel_scale: 9.80665                    # 加计乘此系数得 m/s²；输入是 g 用默认，m/s² 填 1.0
+
+    # --- 点云预处理 -------------------------------------------
+    deskew: true                                # 按逐点时间戳去除运动畸变
+    min_range: 0.3                              # 近于此距离的点丢弃 (m)
+    max_range: 60.0                             # 远于此距离的点丢弃 (m)
+    self_filter_min: [-0.3, -0.50, -0.05]       # 机身框下角 [x, y, z]（雷达系），落在框内的点丢弃；不填 = 关
+    self_filter_max: [0.3, 1.00, 0.15]          # 机身框上角 [x, y, z]
+
+    # --- 点云时间戳（自动识别出错时才改） ---------------------
+    lidar_timestamps:
+      multiplier_to_seconds: 0.0                # 逐点时间戳乘此值得秒；0 = 自动
+      force_absolute: false                     # 强制当作绝对时间
+      force_relative: false                     # 强制当作相对帧头的时间
+
+    # --- 地图 -------------------------------------------------
+    voxel_size: 0.3                             # 地图体素边长 (m)；越小越精细越耗 CPU
+    double_downsample: false                    # 关键点再降采样一次；体素小时关掉
+
+    # --- 配准 (ICP) -------------------------------------------
+    max_correspondence_distance: 0.18           # 点与地图能配对的最大距离 (m)，取 voxel/√8 ~ voxel 之间
+    max_iterations: 8                           # 最大迭代次数
+    convergence_criterion: 0.00001              # 单步更新量小于此值即收敛
+    convergence_step: 0.001                     # 单步位移小于此值 (m) 提前结束；0 = 关
+    max_num_threads: 1                          # 配对用的线程数；0 = 自动
+
+    # --- 加速度计约束 -----------------------------------------
+    initialization_phase: true                  # 开机时静止估零偏并对齐重力；须静止启动
+    min_beta: 200.0                             # 加速度计约束姿态的权重下限；0 = 关
+    max_expected_jerk: 3.0                      # 机体加速度变化率上限 (m/s³)，越大越信加速度计
+
+    # --- 陀螺融合（0/false = 关） -----------------------------
+    imu_rate_motion: true                       # 去畸变和预测用帧内每个陀螺采样，不用整帧平均
+    rotation_prior_weight: 200.0                # ICP 旋转向陀螺预测靠拢的权重；实测 100~300 稳
+    gyro_bias_time_constant: 30.0               # 运动中跟踪陀螺零偏的时间常数 (s)
+    gravity_time_constant: 20.0                 # 横滚/俯仰向重力方向收敛的时间常数 (s)
+
+    # --- 静止保持 ---------------------------------------------
+    zero_velocity_update: true                  # 静止时锁住位姿、不写地图
+    zupt_gyro_threshold: 0.008                  # 陀螺波动小于此值算静止 (rad/s)
+    zupt_accel_threshold: 0.06                  # 加计模长波动小于此值算静止 (m/s²)
+    zupt_max_translation: 0.03                  # 静止时点云与锁定位姿偏差超过此值就解锁 (m)
+    zupt_max_rotation: 0.01                     # 同上，转角 (rad)
+    zupt_gyro_bias_gain: 0.05                   # 静止时更新陀螺零偏的增益；0 = 不更新
+
+    # --- 异常处理 ---------------------------------------------
+    reject_implausible_registration: true       # 配准不可信时改用预测位姿，这帧不写地图
+    min_matched_ratio: 0.3                      # 配上的关键点比例低于此值判为不可信
+    max_correction_translation: 0.35            # 配准相对预测修正超过此值判为不可信 (m)
+    max_correction_rotation: 0.15               # 同上，转角 (rad)
+    reset_on_registration_error: true           # 配准失败时重置里程计继续跑（保留位姿）；否则节点退出
+    max_scan_gap_s: 1.0                         # 相邻两帧间隔超过此值 (s) 直接重置；0 = 外推
+
+    # --- 输出 -------------------------------------------------
+    odom_topic: rko_lio/odom                    # 里程计话题
+    invert_odom_tf: false                       # TF 发 base->odom 而不是 odom->base
+    publish_deskewed_scan: true                 # 发布去畸变点云（base 系）
+    deskewed_scan_topic: rko_lio/deskewed_scan  # 去畸变点云话题
+    publish_local_map: false                    # 发布局部地图
+    map_topic: rko_lio/local_map                # 局部地图话题
+    publish_map_after: 1.0                      # 局部地图发布间隔 (s)
+    publish_lidar_acceleration: false           # 发布估计的加速度到 rko_lio/lidar_acceleration
+
+    # --- 缓冲 -------------------------------------------------
+    async:
+      max_lidar_buffer_size: 10                 # 待处理点云队列上限，满了丢最旧的
+      max_imu_wait_s: 0.25                      # IMU 落后点云超过此值 (s) 就不等直接配准；0 = 一直等
+
+    # --- 结果落盘 ---------------------------------------------
+    dump_results: false                         # 退出时把配置和轨迹写到 results_dir/run_name
+    results_dir: results                        # 落盘目录
+    run_name: rko_lio_run                       # 本次运行名

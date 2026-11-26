@@ -26,6 +26,7 @@
 #include "rko_lio/ros/utils/spdlog_sink.hpp"
 #include "rko_lio/ros/utils/utils.hpp"
 // other
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -37,6 +38,9 @@
 
 namespace {
 using namespace std::literals;
+
+constexpr std::size_t POSES_KEPT_WITHOUT_DUMP = 1024;
+constexpr auto MAX_IMU_ONLY_PROPAGATION = 2s;
 
 std::string config_to_yaml(const rko_lio::core::LIO::Config& config) {
   std::ostringstream ss;
@@ -59,11 +63,13 @@ std::string config_to_yaml(const rko_lio::core::LIO::Config& config) {
 
 namespace rko_lio::ros {
 
-core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg) {
+core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg, double gyro_scale, double accel_scale) {
   core::ImuControl imu_data;
   imu_data.time = utils::to_ns(imu_msg.header.stamp);
-  imu_data.angular_velocity = utils::ros_xyz_to_eigen_vector(imu_msg.angular_velocity);
-  imu_data.acceleration = utils::ros_xyz_to_eigen_vector(imu_msg.linear_acceleration);
+  imu_data.angular_velocity =
+      utils::ros_xyz_to_eigen_vector(imu_msg.angular_velocity) * static_cast<core::Scalar>(gyro_scale);
+  imu_data.acceleration =
+      utils::ros_xyz_to_eigen_vector(imu_msg.linear_acceleration) * static_cast<core::Scalar>(accel_scale);
   return imu_data;
 }
 
@@ -136,6 +142,8 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   lio_config.min_range = static_cast<core::Scalar>(node->declare_parameter<double>("min_range", lio_config.min_range));
   lio_config.convergence_criterion = static_cast<core::Scalar>(
       node->declare_parameter<double>("convergence_criterion", lio_config.convergence_criterion));
+  lio_config.convergence_step =
+      static_cast<core::Scalar>(node->declare_parameter<double>("convergence_step", lio_config.convergence_step));
   lio_config.max_correspondence_distance = static_cast<core::Scalar>(
       node->declare_parameter<double>("max_correspondence_distance", lio_config.max_correspondence_distance));
   lio_config.max_num_threads = static_cast<int>(node->declare_parameter<int>("max_num_threads", 1));
@@ -145,7 +153,36 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
       static_cast<core::Scalar>(node->declare_parameter<double>("max_expected_jerk", lio_config.max_expected_jerk));
   lio_config.double_downsample = node->declare_parameter<bool>("double_downsample", lio_config.double_downsample);
   lio_config.min_beta = static_cast<core::Scalar>(node->declare_parameter<double>("min_beta", lio_config.min_beta));
+  lio_config.imu_rate_motion = node->declare_parameter<bool>("imu_rate_motion", lio_config.imu_rate_motion);
+  lio_config.rotation_prior_weight = static_cast<core::Scalar>(
+      node->declare_parameter<double>("rotation_prior_weight", lio_config.rotation_prior_weight));
+  lio_config.gravity_time_constant = static_cast<core::Scalar>(
+      node->declare_parameter<double>("gravity_time_constant", lio_config.gravity_time_constant));
+  lio_config.gyro_bias_time_constant = static_cast<core::Scalar>(
+      node->declare_parameter<double>("gyro_bias_time_constant", lio_config.gyro_bias_time_constant));
+  lio_config.reject_implausible_registration =
+      node->declare_parameter<bool>("reject_implausible_registration", lio_config.reject_implausible_registration);
+  lio_config.min_matched_ratio = static_cast<core::Scalar>(
+      node->declare_parameter<double>("min_matched_ratio", lio_config.min_matched_ratio));
+  lio_config.max_correction_translation = static_cast<core::Scalar>(
+      node->declare_parameter<double>("max_correction_translation", lio_config.max_correction_translation));
+  lio_config.max_correction_rotation = static_cast<core::Scalar>(
+      node->declare_parameter<double>("max_correction_rotation", lio_config.max_correction_rotation));
+  lio_config.zero_velocity_update = node->declare_parameter<bool>("zero_velocity_update", lio_config.zero_velocity_update);
+  lio_config.zupt_gyro_threshold = static_cast<core::Scalar>(
+      node->declare_parameter<double>("zupt_gyro_threshold", lio_config.zupt_gyro_threshold));
+  lio_config.zupt_accel_threshold = static_cast<core::Scalar>(
+      node->declare_parameter<double>("zupt_accel_threshold", lio_config.zupt_accel_threshold));
+  lio_config.zupt_max_translation = static_cast<core::Scalar>(
+      node->declare_parameter<double>("zupt_max_translation", lio_config.zupt_max_translation));
+  lio_config.zupt_max_rotation = static_cast<core::Scalar>(
+      node->declare_parameter<double>("zupt_max_rotation", lio_config.zupt_max_rotation));
+  lio_config.zupt_gyro_bias_gain = static_cast<core::Scalar>(
+      node->declare_parameter<double>("zupt_gyro_bias_gain", lio_config.zupt_gyro_bias_gain));
   lio = std::make_unique<core::LIO>(lio_config);
+
+  imu_gyro_scale = node->declare_parameter<double>("imu_gyro_scale", imu_gyro_scale);
+  imu_accel_scale = node->declare_parameter<double>("imu_accel_scale", imu_accel_scale);
 
   // Lidar per-point timestamp processing params, namespaced under lidar_timestamps.*
   timestamp_proc_config.multiplier_to_seconds = node->declare_parameter<double>(
@@ -154,6 +191,26 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
       node->declare_parameter<bool>("lidar_timestamps.force_absolute", timestamp_proc_config.force_absolute);
   timestamp_proc_config.force_relative =
       node->declare_parameter<bool>("lidar_timestamps.force_relative", timestamp_proc_config.force_relative);
+
+  const std::vector<double> self_min =
+      node->declare_parameter<std::vector<double>>("self_filter_min", std::vector<double>{});
+  const std::vector<double> self_max =
+      node->declare_parameter<std::vector<double>>("self_filter_max", std::vector<double>{});
+  if (!self_min.empty() || !self_max.empty()) {
+    if (self_min.size() != 3 || self_max.size() != 3) {
+      throw std::invalid_argument(
+          "self_filter_min and self_filter_max need 3 values each (x, y, z in the lidar frame).");
+    }
+    self_filter_min = Eigen::Vector3d(self_min[0], self_min[1], self_min[2]).cast<core::Scalar>();
+    self_filter_max = Eigen::Vector3d(self_max[0], self_max[1], self_max[2]).cast<core::Scalar>();
+    if (!(self_filter_min.array() < self_filter_max.array()).all()) {
+      throw std::invalid_argument("self_filter_min must be smaller than self_filter_max on every axis.");
+    }
+    self_filter = true;
+    RCLCPP_INFO_STREAM(node->get_logger(), "Self filter: dropping lidar-frame points inside min "
+                                               << self_filter_min.transpose() << " max "
+                                               << self_filter_max.transpose());
+  }
 
   // manually, if, define extrinsics
   parse_cli_extrinsics();
@@ -172,6 +229,8 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
 
   reset_on_registration_error =
       node->declare_parameter<bool>("reset_on_registration_error", reset_on_registration_error);
+  max_scan_gap = std::chrono::duration_cast<core::Nsec>(std::chrono::duration<double>(
+      node->declare_parameter<double>("max_scan_gap_s", core::to_seconds(max_scan_gap))));
 
   // disk logging
   dump_results = node->declare_parameter<bool>("dump_results", dump_results);
@@ -183,6 +242,14 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
       dump_results_to_disk(results_dir, run_name);
     }
   });
+
+  if (const char* stats_path = std::getenv("RKO_LIO_STATS_CSV"); stats_path != nullptr && *stats_path != 0) {
+    stats_csv.open(stats_path);
+    stats_csv << "stamp_ns,raw_points,input_points,filtered_points,keypoints,icp_iterations,correspondences,chi,"
+                 "last_step_trans,last_step_rot,prior_corr_trans,prior_corr_rot,accel_mag_variance,imu_count,"
+                 "parse_ms,imu_ms,deskew_ms,preprocess_ms,icp_ms,map_ms,core_ms,register_ms,publish_ms,loop_ms,"
+                 "loop_cpu_ms,latency_ms,queue_length,reset_count,px,py,pz,qx,qy,qz,qw,vx,vy,vz,wx,wy,wz,stationary,rejected,bgx,bgy,bgz\n";
+  }
 
   RCLCPP_INFO(node->get_logger(), "RKO LIO Node is up!");
 }
@@ -205,6 +272,14 @@ void BaseNode::parse_cli_extrinsics() {
   const bool imu_ok = parse_extrinsic("imu", extrinsic_imu2base);
   const bool lidar_ok = parse_extrinsic("lidar", extrinsic_lidar2base);
   extrinsics_set = imu_ok && lidar_ok;
+  if (extrinsics_set) {
+    on_extrinsics_set();
+  }
+}
+
+void BaseNode::on_extrinsics_set() {
+  filter_range_while_reading = extrinsic_lidar2base.translation().norm() < 1e-6;
+  lio->config.scan_is_range_filtered = filter_range_while_reading;
 }
 
 bool BaseNode::ensure_frame_and_extrinsics(std::string& target_frame,
@@ -237,33 +312,50 @@ bool BaseNode::check_and_set_extrinsics() {
   extrinsic_imu2base = imu_transform.value();
   extrinsic_lidar2base = lidar_transform.value();
   extrinsics_set = true;
+  on_extrinsics_set();
   return true;
 }
 
 LidarScan BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) const {
-  const core::Nsec header_stamp = utils::to_ns(lidar_msg->header.stamp);
-  if (lio->config.deskew) {
-    utils::RawScan scan = utils::point_cloud2_to_eigen_with_timestamps(lidar_msg);
-    return {
-        .timestamps = core::process_timestamps(scan.timestamps, header_stamp, timestamp_proc_config),
-        .points = std::move(scan.points),
-    };
+  if (!lio->config.deskew) {
+    RCLCPP_WARN_STREAM_ONCE(node->get_logger(),
+                            "Deskewing is disabled. Populating timestamps with static header time.");
   }
-  RCLCPP_WARN_STREAM_ONCE(node->get_logger(), "Deskewing is disabled. Populating timestamps with static header time.");
-  LidarScan scan{
-      .timestamps = {.min = header_stamp, .max = header_stamp},
-      .points = utils::point_cloud2_to_eigen(lidar_msg),
-  };
-  scan.timestamps.per_point.assign(scan.points.size(), header_stamp);
+  utils::ScanFilter filter;
+  filter.drop_box = self_filter;
+  filter.box_min = self_filter_min.cast<float>();
+  filter.box_max = self_filter_max.cast<float>();
+  if (filter_range_while_reading) {
+    filter.min_range = lio->config.min_range;
+    filter.max_range = lio->config.max_range;
+  }
+  utils::FilteredScan filtered = utils::read_scan(*lidar_msg, filter, timestamp_proc_config, lio->config.deskew);
+  LidarScan scan;
+  scan.timestamps = std::move(filtered.timestamps);
+  scan.points = std::move(filtered.points);
+  scan.raw_points = filtered.message_points;
   return scan;
 }
 
 core::Vector3sVector BaseNode::register_scan_locked(core::Vector3sVector scan, const core::Timestamps& timestamps) {
+  const core::Nsec last_scan_time = lio->lidar_state.time;
+  if (max_scan_gap > core::Nsec::zero() && last_scan_time > core::Nsec::zero() &&
+      std::chrono::abs(timestamps.max - last_scan_time) > max_scan_gap) {
+    RCLCPP_WARN_STREAM(node->get_logger(), core::to_seconds(timestamps.max - last_scan_time)
+                                               << " s gap to the previous scan exceeds max_scan_gap_s ("
+                                               << core::to_seconds(max_scan_gap) << " s). Resetting odometry.");
+    reset_odometry();
+  }
   std::unique_lock lock(local_map_mutex, std::defer_lock);
   if (publish_local_map) {
     lock.lock(); // map publish thread may access map simultaneously
   }
-  return lio->register_scan(extrinsic_lidar2base, std::move(scan), timestamps);
+  core::Vector3sVector deskewed_scan = lio->register_scan(extrinsic_lidar2base, std::move(scan), timestamps);
+  if (!dump_results && lio->poses_with_timestamps.size() > POSES_KEPT_WITHOUT_DUMP) {
+    auto& poses = lio->poses_with_timestamps;
+    poses.erase(poses.begin(), poses.end() - 1);
+  }
+  return deskewed_scan;
 }
 
 void BaseNode::publish_lidar_outputs(const core::Vector3sVector& deskewed_scan) const {
@@ -338,18 +430,65 @@ BaseNode::~BaseNode() {
   node->get_node_base_interface()->get_context()->remove_on_shutdown_callback(shutdown_handle);
 }
 
+void BaseNode::write_stats(const LoopStats& loop_stats) const {
+  if (!stats_csv.is_open()) {
+    return;
+  }
+  const auto& fs = lio->frame_stats;
+  const auto& state = lio->lidar_state;
+  const Eigen::Vector3s& p = state.pose.translation();
+  const Eigen::Quaternions& q = state.pose.so3().unit_quaternion();
+  stats_csv << state.time.count() << ',' << loop_stats.raw_points << ',' << fs.input_points << ','
+            << fs.filtered_points << ',' << fs.keypoints << ',' << fs.icp_iterations << ',' << fs.correspondences
+            << ',' << fs.chi << ',' << fs.last_step_translation << ',' << fs.last_step_rotation << ','
+            << fs.prior_correction_translation << ',' << fs.prior_correction_rotation << ','
+            << fs.accel_mag_variance << ',' << fs.imu_count << ',' << loop_stats.parse_ms << ','
+            << loop_stats.imu_ms << ',' << fs.deskew_ms << ',' << fs.preprocess_ms << ',' << fs.icp_ms << ','
+            << fs.map_ms << ',' << fs.total_ms << ',' << loop_stats.register_ms << ',' << loop_stats.publish_ms
+            << ',' << loop_stats.loop_ms << ',' << loop_stats.loop_cpu_ms << ',' << loop_stats.latency_ms << ','
+            << loop_stats.queue_length << ',' << lio->reset_count << ',' << std::setprecision(9) << p.x() << ','
+            << p.y() << ',' << p.z() << ',' << q.x() << ',' << q.y() << ',' << q.z() << ',' << q.w() << ','
+            << std::setprecision(6) << state.linear_velocity.x() << ',' << state.linear_velocity.y() << ','
+            << state.linear_velocity.z() << ',' << state.angular_velocity.x() << ',' << state.angular_velocity.y()
+            << ',' << state.angular_velocity.z() << ',' << (fs.stationary ? 1 : 0) << ','
+            << (fs.rejected ? 1 : 0) << ',' << lio->imu_bias.gyroscope.x() << ',' << lio->imu_bias.gyroscope.y() << ','
+            << lio->imu_bias.gyroscope.z() << '\n';
+}
+
 void BaseNode::reset_odometry() {
   const bool forced_init_off = lio->config.initialization_phase;
   std::unique_lock lock(local_map_mutex, std::defer_lock);
   if (publish_local_map) {
     lock.lock();
   }
+  const bool static_init_pending = forced_init_off && lio->poses_with_timestamps.empty();
+  const core::State last_state = lio->lidar_state;
+  const core::State propagated = lio->imu_state;
+  const core::ImuBias last_bias = lio->imu_bias;
   lio->restart();
+  if (static_init_pending) {
+    lio->config.initialization_phase = true;
+  } else {
+    const core::Nsec propagated_for = propagated.time - last_state.time;
+    lio->lidar_state.pose = last_state.pose;
+    if (propagated_for > core::Nsec::zero()) {
+      lio->lidar_state.pose.so3() = propagated.pose.so3();
+      if (propagated_for <= MAX_IMU_ONLY_PROPAGATION) {
+        lio->lidar_state.pose.translation() = propagated.pose.translation();
+        lio->lidar_state.linear_velocity = propagated.linear_velocity;
+        lio->lidar_state.angular_velocity = propagated.angular_velocity;
+      }
+    } else {
+      lio->lidar_state.linear_velocity = last_state.linear_velocity;
+      lio->lidar_state.angular_velocity = last_state.angular_velocity;
+    }
+    lio->imu_bias = last_bias;
+  }
   RCLCPP_WARN_STREAM(node->get_logger(), "Odometry reset count: " << lio->reset_count);
   std_msgs::msg::UInt32 reset_count_msg;
   reset_count_msg.data = static_cast<std::uint32_t>(lio->reset_count);
   reset_count_publisher->publish(reset_count_msg);
-  if (forced_init_off) {
+  if (forced_init_off && !static_init_pending) {
     RCLCPP_WARN(node->get_logger(),
                 "initialization_phase was enabled; it is off after reset because static start is not guaranteed.");
   }

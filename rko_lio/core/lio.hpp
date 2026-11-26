@@ -58,8 +58,12 @@ public:
     /** Minimum lidar range (m). */
     Scalar min_range = 1.0;
 
+    bool scan_is_range_filtered = false;
+
     /** ICP convergence threshold. */
     Scalar convergence_criterion = 1e-5;
+
+    Scalar convergence_step = 0;
 
     /** Max distance for correspondences (m). */
     Scalar max_correspondence_distance = 0.5;
@@ -78,6 +82,36 @@ public:
 
     /** Minimum weight for orientation regularization. */
     Scalar min_beta = 200;
+
+    bool imu_rate_motion = false;
+
+    Scalar rotation_prior_weight = 0;
+
+    Scalar gravity_time_constant = 0;
+
+    Scalar gyro_bias_time_constant = 0;
+
+    bool reject_implausible_registration = false;
+
+    Scalar min_matched_ratio = static_cast<Scalar>(0.3);
+
+    Scalar max_correction_translation = static_cast<Scalar>(0.35);
+
+    Scalar max_correction_rotation = static_cast<Scalar>(0.15);
+
+    std::size_t max_rejected_scans = 10;
+
+    bool zero_velocity_update = false;
+
+    Scalar zupt_gyro_threshold = 0.008;
+
+    Scalar zupt_accel_threshold = 0.06;
+
+    Scalar zupt_max_translation = 0.03;
+
+    Scalar zupt_max_rotation = 0.01;
+
+    Scalar zupt_gyro_bias_gain = 0.05;
   };
 
   /** Configuration parameters. */
@@ -95,6 +129,10 @@ public:
   /** IMU bias estimates when initialization is enabled. */
   ImuBias imu_bias;
 
+  Eigen::Vector3s gyro_rest_bias = Eigen::Vector3s::Zero();
+
+  Eigen::Vector3s gyro_motion_bias = Eigen::Vector3s::Zero();
+
   /** Mean body acceleration estimate. */
   Eigen::Vector3s mean_body_acceleration = Eigen::Vector3s::Zero();
 
@@ -104,8 +142,33 @@ public:
   /** IMU measurement statistics since last LiDAR frame. */
   IntervalStats interval_stats;
 
+  std::vector<GyroSample> interval_gyro;
+
   /** How many times `reset()` has been called. */
   std::size_t reset_count = 0;
+
+  struct FrameStats {
+    std::size_t input_points = 0;
+    std::size_t filtered_points = 0;
+    std::size_t keypoints = 0;
+    std::size_t icp_iterations = 0;
+    std::size_t correspondences = 0;
+    Scalar chi = 0;
+    Scalar last_step_translation = 0;
+    Scalar last_step_rotation = 0;
+    Scalar prior_correction_translation = 0;
+    Scalar prior_correction_rotation = 0;
+    Scalar accel_mag_variance = 0;
+    int imu_count = 0;
+    bool stationary = false;
+    bool rejected = false;
+    double deskew_ms = 0;
+    double preprocess_ms = 0;
+    double icp_ms = 0;
+    double map_ms = 0;
+    double total_ms = 0;
+  };
+  FrameStats frame_stats;
 
   explicit LIO(const Config& config_);
 
@@ -175,5 +238,17 @@ private:
 
   /** Angular velocity of last true IMU measurement expressed in base frame. */
   Eigen::Vector3s last_real_base_imu_ang_vel_ = Eigen::Vector3s::Zero();
+
+  std::size_t still_intervals_ = 0;
+
+  Sophus::SE3s still_anchor_;
+
+  std::size_t held_scans_ = 0;
+
+  std::size_t hold_cooldown_ = 0;
+
+  std::size_t hold_checks_failed_ = 0;
+
+  std::size_t rejected_scans_ = 0;
 };
 } // namespace rko_lio::core

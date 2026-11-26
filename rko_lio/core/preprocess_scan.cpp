@@ -6,10 +6,14 @@
 namespace rko_lio::core {
 
 PreprocessingResult preprocess_scan(Vector3sVector scan, const LIO::Config& config) {
-  std::erase_if(scan, [&](const auto& point) {
-    const Scalar point_range = point.norm();
-    return !std::isfinite(point_range) || point_range <= config.min_range || point_range >= config.max_range;
-  });
+  if (!config.scan_is_range_filtered) {
+    const Scalar min_range_sq = square(config.min_range);
+    const Scalar max_range_sq = square(config.max_range);
+    std::erase_if(scan, [&](const auto& point) {
+      const Scalar range_sq = point.squaredNorm();
+      return !(range_sq > min_range_sq && range_sq < max_range_sq);
+    });
+  }
 
   if (config.double_downsample) {
     Vector3sVector downsampled = voxel_down_sample(scan, config.voxel_size * static_cast<Scalar>(0.5));

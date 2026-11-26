@@ -100,6 +100,11 @@ struct ImuControl {
   Eigen::Vector3s angular_velocity = Eigen::Vector3s::Zero();
 };
 
+struct GyroSample {
+  Nsec time{0};
+  Eigen::Vector3s angular_velocity = Eigen::Vector3s::Zero();
+};
+
 /** Accumulated IMU statistics over the interval between consecutive LiDAR scans. */
 struct IntervalStats {
   /** Number of IMU samples accumulated during this interval. */
@@ -113,6 +118,8 @@ struct IntervalStats {
 
   /** Sum of unbiased raw IMU accelerations. */
   Eigen::Vector3s imu_acceleration_sum = Eigen::Vector3s::Zero();
+
+  Eigen::Vector3s odom_acceleration_sum = Eigen::Vector3s::Zero();
 
   /** Mean magnitude of raw IMU acceleration over the interval. */
   Scalar imu_accel_mag_mean = 0;
@@ -148,6 +155,7 @@ struct IntervalStats {
     angular_velocity_sum.setZero();
     body_acceleration_sum.setZero();
     imu_acceleration_sum.setZero();
+    odom_acceleration_sum.setZero();
     imu_accel_mag_mean = 0;
     welford_sum_of_squares = 0;
   }

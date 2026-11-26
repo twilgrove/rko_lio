@@ -23,7 +23,10 @@
  */
 
 #pragma once
+#include <rko_lio/core/process_timestamps.hpp>
 #include <rko_lio/core/util.hpp>
+
+#include <limits>
 
 #include <Eigen/Core>
 #include <functional>
@@ -66,4 +69,22 @@ create_lidar_subscription(const rclcpp::Node::SharedPtr& node,
                           const std::string& topic,
                           const rclcpp::QoS& qos,
                           const std::function<void(const sensor_msgs::msg::PointCloud2::ConstSharedPtr&)>& callback);
+struct ScanFilter {
+  double min_range = 0.0;
+  double max_range = std::numeric_limits<double>::infinity();
+  bool drop_box = false;
+  Eigen::Vector3f box_min = Eigen::Vector3f::Zero();
+  Eigen::Vector3f box_max = Eigen::Vector3f::Zero();
+};
+
+struct FilteredScan {
+  core::Vector3sVector points;
+  core::Timestamps timestamps;
+  std::size_t message_points = 0;
+};
+
+FilteredScan read_scan(const sensor_msgs::msg::PointCloud2& msg,
+                       const ScanFilter& filter,
+                       const core::TimestampProcessingConfig& timestamp_config,
+                       bool use_point_stamps);
 }; // namespace rko_lio::ros::utils

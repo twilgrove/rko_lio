@@ -23,6 +23,10 @@
 
 #include "point_cloud_write.hpp"
 #include "rko_lio/core/error.hpp"
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <memory>
 #include <regex>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
@@ -33,6 +37,17 @@ using sensor_msgs::msg::PointCloud2;
 using sensor_msgs::msg::PointField;
 using std_msgs::msg::Header;
 using StampType = builtin_interfaces::msg::Time;
+
+constexpr std::size_t POINT_STEP = 16;
+
+PointField xyz_field(const char* name, const std::uint32_t offset) {
+  PointField field;
+  field.name = name;
+  field.offset = offset;
+  field.datatype = PointField::FLOAT32;
+  field.count = 1;
+  return field;
+}
 
 std::string FixFrameId(const std::string& frame_id) { return std::regex_replace(frame_id, std::regex("^/"), ""); }
 
@@ -88,8 +103,26 @@ void fill_point_cloud2_intensity(const std::vector<float>& intensities, PointClo
 namespace rko_lio::ros::utils {
 
 PointCloud2::UniquePtr eigen_to_point_cloud2(const rko_lio::core::Vector3sVector& points, const Header& header) {
-  PointCloud2::UniquePtr msg = create_point_cloud2_msg(points.size(), header);
-  fill_point_cloud2_xyz(points, *msg);
+  PointCloud2::UniquePtr msg = std::make_unique<PointCloud2>();
+  msg->header = header;
+  if (!msg->header.frame_id.empty() && msg->header.frame_id.front() == '/') {
+    msg->header.frame_id.erase(0, 1);
+  }
+  msg->fields = {xyz_field("x", 0), xyz_field("y", 4), xyz_field("z", 8)};
+  msg->height = 1;
+  msg->width = static_cast<std::uint32_t>(points.size());
+  msg->is_bigendian = false;
+  msg->is_dense = false;
+  msg->point_step = POINT_STEP;
+  msg->row_step = static_cast<std::uint32_t>(points.size() * POINT_STEP);
+  msg->data.resize(points.size() * POINT_STEP);
+  std::uint8_t* out = msg->data.data();
+  for (const Eigen::Vector3s& point : points) {
+    const std::array<float, 3> xyz{static_cast<float>(point.x()), static_cast<float>(point.y()),
+                                   static_cast<float>(point.z())};
+    std::memcpy(out, xyz.data(), sizeof(xyz));
+    out += POINT_STEP;
+  }
   return msg;
 }
 

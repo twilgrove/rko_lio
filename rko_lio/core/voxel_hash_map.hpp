@@ -70,7 +70,10 @@ class VoxelHashMap {
 public:
   explicit VoxelHashMap(const Scalar voxel_size, const Scalar clipping_distance);
 
-  void clear() { voxels.clear(); }
+  void clear() {
+    voxels.clear();
+    last_clip_location_.reset();
+  }
   bool empty() const { return voxels.empty(); }
   void update(const std::vector<Eigen::Vector3s>& points, const Sophus::SE3s& pose);
   void add_points(const std::vector<Eigen::Vector3s>& points, const Sophus::SE3s& pose);
@@ -93,6 +96,7 @@ private:
   Scalar inv_voxel_size_;
   Scalar inv_quantum_;
   Scalar clipping_distance_;
+  std::optional<Eigen::Vector3s> last_clip_location_;
 };
 
 } // namespace rko_lio::core

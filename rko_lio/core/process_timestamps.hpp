@@ -29,6 +29,8 @@
 
 #pragma once
 #include "util.hpp"
+#include <cmath>
+#include <cstdint>
 #include <tuple>
 #include <vector>
 
@@ -73,6 +75,24 @@ struct TimestampProcessingConfig {
  *   - A vector of all processed point timestamps converted to absolute nanoseconds (TimestampVector).
  * @throws std::runtime_error If the timestamp format or values are unrecognized or unsupported.
  */
+struct TimestampConversion {
+  double multiplier_to_ns = 1.0;
+  bool source_is_ns = false;
+  Nsec offset{0};
+
+  Nsec operator()(const double raw) const {
+    if (source_is_ns) {
+      return Nsec(static_cast<std::int64_t>(raw)) + offset;
+    }
+    return Nsec(static_cast<std::int64_t>(std::llround(raw * multiplier_to_ns))) + offset;
+  }
+};
+
+TimestampConversion classify_timestamps(const double raw_min,
+                                        const double raw_max,
+                                        const Nsec header_stamp,
+                                        const TimestampProcessingConfig& config);
+
 Timestamps process_timestamps(const std::vector<double>& raw_timestamps,
                               const Nsec header_stamp,
                               const TimestampProcessingConfig& config);

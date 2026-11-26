@@ -26,7 +26,9 @@
 #include "rko_lio/core/lio.hpp"
 // stl
 #include <atomic>
+#include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -51,9 +53,12 @@ namespace rko_lio::ros {
 struct LidarScan {
   core::Timestamps timestamps;
   core::Vector3sVector points;
+  std::chrono::steady_clock::time_point arrival{};
+  double parse_ms = 0;
+  std::size_t raw_points = 0;
 };
 // Shared helper used by both the threaded and sequential nodes.
-core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg);
+core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg, double gyro_scale, double accel_scale);
 
 class BaseNode {
 public:
@@ -66,6 +71,8 @@ public:
   core::Nsec publish_map_after = std::chrono::seconds(1);
   rclcpp::Node::SharedPtr node;
   core::TimestampProcessingConfig timestamp_proc_config;
+  double imu_gyro_scale = 0.017453292519943295;
+  double imu_accel_scale = 9.80665;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer;
 
@@ -87,6 +94,10 @@ public:
   std::string results_dir = "results";
   std::string run_name = "rko_lio_run";
 
+  bool self_filter = false;
+  Eigen::Vector3s self_filter_min = Eigen::Vector3s::Zero();
+  Eigen::Vector3s self_filter_max = Eigen::Vector3s::Zero();
+
   std::mutex local_map_mutex;
 
   bool dump_results = false;
@@ -95,7 +106,23 @@ public:
   bool publish_deskewed_scan = false;
   bool publish_local_map = false;
   bool extrinsics_set = false;
+  bool filter_range_while_reading = false;
   bool reset_on_registration_error = false;
+  core::Nsec max_scan_gap = std::chrono::seconds(1);
+
+  mutable std::ofstream stats_csv;
+  struct LoopStats {
+    double parse_ms = 0;
+    double imu_ms = 0;
+    double register_ms = 0;
+    double publish_ms = 0;
+    double loop_ms = 0;
+    double loop_cpu_ms = 0;
+    double latency_ms = 0;
+    std::size_t raw_points = 0;
+    std::size_t queue_length = 0;
+  };
+  void write_stats(const LoopStats& loop_stats) const;
 
   std::atomic<bool> atomic_node_running = true;
   rclcpp::OnShutdownCallbackHandle shutdown_handle;
@@ -106,6 +133,7 @@ public:
 
   void parse_cli_extrinsics();
   bool check_and_set_extrinsics();
+  void on_extrinsics_set();
 
   // Parse the message's frame_id into target_frame on first sight, throw if neither header nor static extrinsics
   // are usable, and report whether extrinsics are now set. Extrinsics are assumed static; if they change, switch

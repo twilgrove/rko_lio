@@ -45,6 +45,7 @@ public:
   std::queue<core::ImuControl> imu_buffer;
   std::queue<LidarScan> lidar_buffer;
   size_t max_lidar_buffer_size = 10;
+  core::Nsec max_imu_wait = std::chrono::milliseconds(250);
   std::jthread registration_thread;
 
   ThreadedNode() = delete;
@@ -53,6 +54,7 @@ public:
   void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg);
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg);
   void registration_loop();
+  bool ready_to_register() const;
 
   ~ThreadedNode();
   ThreadedNode(const ThreadedNode&) = delete;

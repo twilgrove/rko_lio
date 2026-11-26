@@ -207,7 +207,12 @@ void VoxelHashMap::remove_points_far_from_location(const Eigen::Vector3s& locati
 
 void VoxelHashMap::update(const std::vector<Eigen::Vector3s>& points, const Sophus::SE3s& pose) {
   add_points(points, pose);
-  remove_points_far_from_location(pose.translation());
+  const Scalar clip_again_after = static_cast<Scalar>(0.05) * clipping_distance_;
+  const Eigen::Vector3s& location = pose.translation();
+  if (!last_clip_location_.has_value() || (location - *last_clip_location_).norm() > clip_again_after) {
+    remove_points_far_from_location(location);
+    last_clip_location_ = location;
+  }
 }
 
 std::vector<Eigen::Vector3s> VoxelHashMap::points() const {
